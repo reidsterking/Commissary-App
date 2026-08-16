@@ -3,79 +3,64 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Commissary Bagger Queue</title>
+  <title>Commissary — Bagger Queue</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; max-width:1000px; margin:20px auto; padding:0 16px; }
-    h1 { margin-top:0; }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; align-items:start; }
-    .card { border:1px solid #ddd; border-radius:8px; padding:12px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.03); }
-    label { display:block; margin:8px 0 4px; font-size:0.9rem; }
-    input[type="text"], select { width:100%; padding:8px; font-size:1rem; box-sizing:border-box; }
-    button { margin-top:8px; padding:8px 12px; font-size:1rem; cursor:pointer; }
-    ul { list-style:none; padding:0; margin:0; }
-    li { padding:8px; border-bottom:1px solid #f0f0f0; display:flex; justify-content:space-between; align-items:center; }
-    .muted { color:#666; font-size:0.9rem; }
-    .registers { display:flex; gap:8px; flex-wrap:wrap; }
-    .reg { width:calc(50% - 8px); border:1px dashed #ccc; padding:8px; border-radius:6px; background:#fafafa; }
-    .big { font-size:1.1rem; font-weight:600; }
-    .next { background:#e6f7ff; border-left:4px solid #1890ff; padding-left:8px; }
-    .controls button { margin-left:6px; }
-    .tiny { font-size:0.85rem; color:#444; }
-    .empty { color:#aaa; font-style:italic; }
-    @media (max-width:700px) { .grid { grid-template-columns: 1fr; } .reg { width:100%; } }
+    :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;color:#111;background:var(--bg);display:flex;flex-direction:column}
+
+    /* Top sticky bar */
+    .topbar{position:sticky;top:0;background:var(--card);padding:12px 16px;border-bottom:1px solid #e6e9ee;display:flex;align-items:center;justify-content:space-between;z-index:10}
+    .topbar .user{display:flex;align-items:center;gap:12px;width:100%}
+    .avatar{width:48px;height:48px;border-radius:8px;background:linear-gradient(135deg,#e6f0ff,#fff);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent)}
+    .user-info{flex:1}
+    .username{font-size:1.05rem;font-weight:600}
+    .status{color:var(--muted);font-size:0.9rem}
+    .topbar button{background:transparent;border:none;color:var(--danger);font-weight:600}
+
+    /* Main scroll area */
+    .content{flex:1;overflow:auto;padding:12px}
+    .group{margin-bottom:16px}
+    .group h3{margin:6px 4px;color:var(--muted);font-size:0.95rem}
+    .list{background:var(--card);border-radius:8px;overflow:hidden;border:1px solid #e6e9ee}
+    .row{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #f1f5f9}
+    .row:last-child{border-bottom:none}
+    .row .left{display:flex;align-items:center;gap:12px}
+    .row .who{font-weight:600}
+    .row .meta{color:var(--muted);font-size:0.85rem}
+    .row button{background:transparent;border:none;color:var(--accent);font-weight:600}
+    .pending{opacity:0.5}
+    .countdown{color:var(--muted);font-size:0.9rem;margin-left:8px}
+
+    /* Bottom sticky action bar */
+    .bottombar{position:sticky;bottom:0;background:var(--card);padding:12px;display:flex;gap:12px;border-top:1px solid #e6e9ee}
+    .btn{flex:1;padding:12px;border-radius:8px;border:none;font-weight:700;font-size:1rem}
+    .btn.primary{background:var(--accent);color:white}
+    .btn.secondary{background:#f1f5f9;color:#111}
+
+    /* Name screen */
+    .name-screen{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:20px}
+    input[type=text]{padding:14px;border-radius:10px;border:1px solid #e6e9ee;font-size:1rem}
+    .center{display:flex;justify-content:center}
+
+    /* Modal */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:50}
+    .modal{background:white;padding:16px;border-radius:10px;max-width:400px;width:92%;box-shadow:0 6px 30px rgba(0,0,0,0.2)}
+    .modal h4{margin:0 0 8px}
+    .modal p{color:var(--muted);margin:0 0 12px}
+    .modal .actions{display:flex;gap:8px;justify-content:flex-end}
+
+    /* small helpers */
+    .muted{color:var(--muted)}
+    @media(min-width:720px){.row{padding:14px 18px}.avatar{width:56px;height:56px}}
   </style>
-  <!-- Firebase SDKs (Realtime Database) -->
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
-  <h1>Commissary Bagger Queue</h1>
-  <p class="muted">Add your name from any device. See the live queue and which bagger is next.</p>
-
-  <div class="card">
-    <label for="name">Your name</label>
-    <input id="name" type="text" placeholder="e.g. Maria" />
-    <label for="role">Where are you?</label>
-    <select id="role">
-      <option value="line">In line</option>
-      <option value="register">At a register</option>
-    </select>
-    <label for="registerSelect">Register (if 'At a register')</label>
-    <select id="registerSelect"></select>
-
-    <div style="margin-top:8px;">
-      <button id="addBtn">Add / Update</button>
-      <button id="clearMeBtn" style="margin-left:8px">Remove Me</button>
-    </div>
-    <p class="tiny">Tip: If you join a register, you’re removed from the line. If you re-add as line you go to the end.</p>
-  </div>
-
-  <div class="grid" style="margin-top:16px;">
-    <div class="card">
-      <h2>Registers</h2>
-      <div id="registers" class="registers"></div>
-      <div style="margin-top:8px">
-        <label for="numRegs">Number of registers</label>
-        <select id="numRegs">
-          <option>2</option><option>3</option><option>4</option><option>5</option>
-        </select>
-        <button id="setRegsBtn">Set</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Line (Queue)</h2>
-      <p class="muted">Next up: <span id="nextUp">—</span></p>
-      <ul id="lineList"></ul>
-      <div style="margin-top:8px">
-        <button id="clearLineBtn">Clear line</button>
-        <button id="sortByTimeBtn" style="margin-left:8px">Sort by join time</button>
-      </div>
-    </div>
-  </div>
-
+  <!-- KEEP THIS PLACEHOLDER EXACTLY AS BEFORE -->
   <script>
-    // ----- CONFIG: replace these with your Firebase project's values -----
     const firebaseConfig = {
       apiKey: "REPLACE_WITH_YOUR_APIKEY",
       authDomain: "REPLACE_WITH_YOUR_AUTHDOMAIN",
@@ -85,254 +70,353 @@
       messagingSenderId: "REPLACE_WITH_YOUR_SENDERID",
       appId: "REPLACE_WITH_YOUR_APPID"
     };
-    // --------------------------------------------------------------------
+  </script>
 
-    // Initialize Firebase
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
+  <!-- Top bar (current user summary) -->
+  <div id="topbar" class="topbar" style="display:none" role="region" aria-label="Your status">
+    <div class="user" id="topUser">
+      <div class="avatar" id="avatar">A</div>
+      <div class="user-info">
+        <div class="username" id="meName">Your name</div>
+        <div class="status" id="meStatus">#3 in line</div>
+      </div>
+      <div>
+        <button id="leaveBtn">Leave</button>
+      </div>
+    </div>
+  </div>
 
-    // DB structure:
-    // /line/{pushId} = { name, ts }
-    // /registers/{i} = { name, sinceTs, id }
-    // /settings/numRegisters
+  <!-- Main content area -->
+  <main class="content">
+    <!-- Name screen -->
+    <div id="nameScreen" class="name-screen" style="display:none">
+      <h2>Enter your name</h2>
+      <input id="nameInput" type="text" inputmode="text" placeholder="e.g. Maria" />
+      <div class="center">
+        <button id="joinBtn" class="btn primary">Join the line</button>
+      </div>
+    </div>
+
+    <!-- Queue screen -->
+    <div id="queueScreen" style="display:none">
+      <section class="group">
+        <h3>At the Register</h3>
+        <div id="registerList" class="list"></div>
+      </section>
+
+      <section class="group">
+        <h3>In Line</h3>
+        <div id="lineList" class="list"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Bottom actions -->
+  <div id="bottomBar" class="bottombar" style="display:none">
+    <button id="toRegisterBtn" class="btn primary">Move to Register</button>
+    <button id="toEndBtn" class="btn secondary">Move to End of Line</button>
+  </div>
+
+  <!-- Modal container -->
+  <div id="modalRoot"></div>
+
+  <script>
+    // App config
+    const CLEANUP_INTERVAL = 5000; // ms to check for expired pending removals
+    const COUNTDOWN_UPDATE = 1000; // update countdown every second
+    const PENDING_DELAY = 10 * 60 * 1000; // 10 minutes in ms
+
+    // Local storage keys
+    const LS_CLIENT = 'comm_clientId';
+    const LS_NAME = 'comm_name';
 
     // UI elements
-    const nameInput = document.getElementById('name');
-    const roleSelect = document.getElementById('role');
-    const registerSelect = document.getElementById('registerSelect');
-    const addBtn = document.getElementById('addBtn');
-    const clearMeBtn = document.getElementById('clearMeBtn');
-    const registersDiv = document.getElementById('registers');
-    const numRegsSelect = document.getElementById('numRegs');
-    const setRegsBtn = document.getElementById('setRegsBtn');
+    const nameScreen = document.getElementById('nameScreen');
+    const queueScreen = document.getElementById('queueScreen');
+    const topbar = document.getElementById('topbar');
+    const bottomBar = document.getElementById('bottomBar');
+    const nameInput = document.getElementById('nameInput');
+    const joinBtn = document.getElementById('joinBtn');
+    const avatarEl = document.getElementById('avatar');
+    const meNameEl = document.getElementById('meName');
+    const meStatusEl = document.getElementById('meStatus');
+    const leaveBtn = document.getElementById('leaveBtn');
+    const registerList = document.getElementById('registerList');
     const lineList = document.getElementById('lineList');
-    const nextUpSpan = document.getElementById('nextUp');
-    const clearLineBtn = document.getElementById('clearLineBtn');
-    const sortByTimeBtn = document.getElementById('sortByTimeBtn');
+    const toRegisterBtn = document.getElementById('toRegisterBtn');
+    const toEndBtn = document.getElementById('toEndBtn');
+    const modalRoot = document.getElementById('modalRoot');
 
-    // helper to get sanitized name
-    function norm(s) { return String(s||'').trim(); }
+    // State
+    let clientId = localStorage.getItem(LS_CLIENT) || null;
+    let myName = localStorage.getItem(LS_NAME) || '';
+    let meRef = null;
+    let people = {}; // {id: {name,status,ts,pendingRemovalAt}}
 
-    // initialize num registers from DB (or default)
-    db.ref('settings/numRegisters').once('value').then(snap => {
-      const n = snap.val() || 2;
-      numRegsSelect.value = String(n);
-      buildRegisterSelect(n);
-    });
-
-    // watch settings.numRegisters changes
-    db.ref('settings/numRegisters').on('value', snap => {
-      const n = snap.val() || 2;
-      numRegsSelect.value = String(n);
-      buildRegisterSelect(n);
-      renderRegisters(); // re-render to ensure slots exist client-side view
-    });
-
-    setRegsBtn.addEventListener('click', () => {
-      const n = parseInt(numRegsSelect.value,10) || 2;
-      db.ref('settings/numRegisters').set(n);
-    });
-
-    function buildRegisterSelect(n) {
-      registerSelect.innerHTML = '';
-      for (let i = 1; i <= n; i++) {
-        const opt = document.createElement('option');
-        opt.value = String(i);
-        opt.textContent = 'Register ' + i;
-        registerSelect.appendChild(opt);
-      }
-      renderRegisters();
+    // Initialize local client id if missing
+    if (!clientId) {
+      if (window.crypto && crypto.randomUUID) clientId = crypto.randomUUID();
+      else clientId = 'c-' + Date.now() + '-' + Math.floor(Math.random()*10000);
+      localStorage.setItem(LS_CLIENT, clientId);
     }
 
-    // Listen for registers
-    db.ref('registers').on('value', snap => {
-      renderRegisters();
-    });
+    // Pre-fill name input if stored
+    if (myName) nameInput.value = myName;
 
-    // Listen for line updates (ordered by ts)
-    db.ref('line').on('value', snap => {
-      renderLine();
-    });
+    // Initialize Firebase (kept as placeholder earlier)
+    try {
+      firebase.initializeApp(firebaseConfig);
+      window.db = firebase.database();
+    } catch (e) {
+      // If firebaseConfig is placeholder the SDK will throw here; that's expected until you add real config
+      console.warn('Firebase init failed (placeholders likely):', e.message);
+      window.db = null;
+    }
 
-    function renderRegisters() {
-      registersDiv.innerHTML = '';
-      db.ref('settings/numRegisters').once('value').then(snap => {
-        const n = snap.val() || 2;
-        db.ref('registers').once('value').then(regSnap => {
-          const regs = regSnap.val() || {};
-          for (let i = 1; i <= n; i++) {
-            const r = regs[i] || null;
-            const div = document.createElement('div');
-            div.className = 'reg card';
-            div.innerHTML = `\n              <div class="tiny">Register ${i}</div>\n              ${r ? `<div class="big">${escapeHtml(r.name)}</div><div class="muted tiny">since ${new Date(r.sinceTs).toLocaleTimeString()}</div>` : `<div class="empty">Empty</div>`}\n              <div style="margin-top:8px" class="controls"></div>\n            `;
-            const controls = div.querySelector('.controls');
-            const takeBtn = document.createElement('button');
-            takeBtn.textContent = 'Take Next';
-            takeBtn.onclick = () => takeNextAtRegister(i);
-            controls.appendChild(takeBtn);
-
-            if (r) {
-              const freeBtn = document.createElement('button');
-              freeBtn.textContent = 'Clear';
-              freeBtn.onclick = () => {
-                if (!confirm('Clear register ' + i + '?')) return;
-                db.ref('registers/' + i).remove();
-              };
-              controls.appendChild(freeBtn);
-
-              const toLineBtn = document.createElement('button');
-              toLineBtn.textContent = 'Move to line';
-              toLineBtn.onclick = () => {
-                moveRegisterToLine(i);
-              };
-              controls.appendChild(toLineBtn);
-            }
-            registersDiv.appendChild(div);
-          }
-        });
+    // Utility: show modal
+    function showModal(title, message, actions=[]) {
+      modalRoot.innerHTML = `\n        <div class=\"modal-backdrop\">\n          <div class=\"modal\">\n            <h4>${escapeHtml(title)}</h4>\n            <p>${escapeHtml(message)}</p>\n            <div class=\"actions\">\n            </div>\n          </div>\n        </div>`;
+      const actionsEl = modalRoot.querySelector('.actions');
+      actions.forEach(a => {
+        const b = document.createElement('button');
+        b.textContent = a.label;
+        b.className = a.className || '';
+        b.onclick = () => { a.onClick(); modalRoot.innerHTML = ''; };
+        actionsEl.appendChild(b);
       });
     }
 
-    function renderLine() {
+    function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
+
+    // DB helpers
+    function peopleRef(){ return db.ref('people'); }
+    function myDbRef(){ return db.ref('people/' + clientId); }
+
+    async function joinLine() {
+      if (!db) { alert('Realtime DB not configured yet. Paste firebaseConfig in the page.'); return; }
+      myName = nameInput.value.trim();
+      if (!myName) { alert('Type your name'); return; }
+      localStorage.setItem(LS_NAME, myName);
+      const data = { name: myName, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null };
+      await myDbRef().set(data);
+      setupListeners();
+      showQueueScreen();
+    }
+
+    async function leaveQueueConfirmed() {
+      if (!db) return gotoNameScreen();
+      await myDbRef().remove();
+      gotoNameScreen();
+    }
+
+    function gotoNameScreen(){
+      topbar.style.display='none';
+      bottomBar.style.display='none';
+      queueScreen.style.display='none';
+      nameScreen.style.display='block';
+    }
+    function showQueueScreen(){
+      nameScreen.style.display='none';
+      queueScreen.style.display='block';
+      topbar.style.display='flex';
+      bottomBar.style.display='flex';
+    }
+
+    // Render UI from people state
+    function render() {
+      // build arrays
+      const regs = [], line = [];
+      Object.keys(people).forEach(id => {
+        const p = people[id];
+        if (!p) return;
+        if (p.status === 'register') regs.push({id, ...p});
+        else line.push({id, ...p});
+      });
+      regs.sort((a,b)=> (a.ts||0)-(b.ts||0));
+      line.sort((a,b)=> (a.ts||0)-(b.ts||0));
+
+      // topbar current user
+      const me = people[clientId];
+      if (me) {
+        avatarEl.textContent = (me.name||'').slice(0,2).toUpperCase();
+        meNameEl.textContent = me.name || 'You';
+        let statusText = '';
+        if (me.status === 'register') statusText = 'At the register';
+        else {
+          const pos = line.findIndex(p=>p.id===clientId);
+          statusText = pos>=0 ? `#${pos+1} in line` : 'In line';
+        }
+        meStatusEl.textContent = statusText;
+      }
+
+      // registers list
+      registerList.innerHTML = '';
+      if (regs.length===0) registerList.innerHTML = '<div class="row"><div class="left"><div class="who muted">No one at registers</div></div></div>';
+      regs.forEach(p => {
+        const r = document.createElement('div'); r.className='row';
+        r.innerHTML = `<div class=\"left\"><div class=\"who\">${escapeHtml(p.name)}</div><div class=\"meta\">since ${timeAgo(p.ts)}</div></div><div class=\"right\"></div>`;
+        // attach click handlers
+        r.onclick = (e)=> onRowClick(p.id);
+        if (p.pendingRemovalAt) r.classList.add('pending');
+        if (p.id===clientId) r.style.background='#f8fbff';
+        // append countdown if pending
+        if (p.pendingRemovalAt) {
+          const cd = document.createElement('div'); cd.className='countdown'; cd.dataset.for = p.id; r.querySelector('.right').appendChild(cd);
+        }
+        registerList.appendChild(r);
+      });
+
+      // line list
       lineList.innerHTML = '';
-      db.ref('line').orderByChild('ts').once('value').then(snap => {
-        const items = [];
-        snap.forEach(child => {
-          items.push({ key: child.key, ...child.val() });
-        });
-
-        if (items.length === 0) nextUpSpan.textContent = '—';
-        else nextUpSpan.textContent = items[0].name;
-
-        items.forEach((it, idx) => {
-          const li = document.createElement('li');
-          li.className = idx === 0 ? 'next' : '';
-          li.innerHTML = `<div>\n              <div style="font-weight:600">${escapeHtml(it.name)}</div>\n              <div class="muted tiny">Joined: ${new Date(it.ts).toLocaleTimeString()} ${idx === items.length-1 ? '(Last)' : ''}</div>\n            </div>\n            <div>\n              <button data-key="${it.key}" class="btnRemove">Remove</button>\n              <button data-key="${it.key}" class="btnPromote">Promote</button>\n            </div>`;
-          lineList.appendChild(li);
-        });
-
-        // attach handlers
-        Array.from(document.getElementsByClassName('btnRemove')).forEach(b => {
-          b.onclick = (e) => {
-            const key = e.target.getAttribute('data-key');
-            if (!confirm('Remove from line?')) return;
-            db.ref('line/' + key).remove();
-          };
-        });
-        Array.from(document.getElementsByClassName('btnPromote')).forEach(b => {
-          b.onclick = (e) => {
-            const key = e.target.getAttribute('data-key');
-            promoteLineMember(key);
-          };
-        });
+      if (line.length===0) lineList.innerHTML = '<div class="row"><div class="left"><div class="who muted">No one in line</div></div></div>';
+      line.forEach((p, idx) => {
+        const r = document.createElement('div'); r.className='row';
+        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${escapeHtml(p.name)}</div><div class=\"meta\">#${idx+1}</div></div><div class=\"meta\">Joined: ${timeAgo(p.ts)}</div></div><div class=\"right\"></div>`;
+        r.onclick = ()=> onRowClick(p.id);
+        if (p.pendingRemovalAt) r.classList.add('pending');
+        if (p.pendingRemovalAt) {
+          const cd = document.createElement('div'); cd.className='countdown'; cd.dataset.for = p.id; r.querySelector('.right').appendChild(cd);
+        }
+        if (p.id===clientId) r.style.background='#f8fbff';
+        lineList.appendChild(r);
       });
+
+      // show top/bottom if me present
+      if (me) { topbar.style.display='flex'; bottomBar.style.display='flex'; }
+      else { topbar.style.display='none'; bottomBar.style.display='none'; }
     }
 
-    // add / update current user by name: remove any existing occurrences then add new one per chosen role
-    addBtn.addEventListener('click', async () => {
-      const name = norm(nameInput.value);
-      if (!name) { alert('Enter a name'); return; }
-      const role = roleSelect.value;
-      // remove existing occurrences for this name in line and registers (simple de-dupe by exact name)
-      await dedupeName(name);
-      if (role === 'line') {
-        const ref = db.ref('line').push();
-        await ref.set({ name, ts: Date.now() });
-        alert('Added to line');
-      } else {
-        const reg = registerSelect.value || '1';
-        await db.ref('registers/' + reg).set({ name, sinceTs: Date.now() });
-        alert('Assigned to register ' + reg);
+    function timeAgo(ts){ if(!ts) return ''; const d = new Date(ts); return d.toLocaleTimeString(); }
+
+    // clicking a row: if it's me -> confirm immediate remove; else -> set pendingRemovalAt or cancel
+    function onRowClick(id) {
+      const p = people[id]; if(!p) return;
+      if (id === clientId) {
+        showModal('Leave queue', 'Remove yourself from the queue?', [
+          {label:'Cancel', onClick:()=>{}},
+          {label:'Leave', className:'btn primary', onClick:()=> leaveQueueConfirmed()}
+        ]);
+        return;
       }
-    });
 
-    clearMeBtn.addEventListener('click', async () => {
-      const name = norm(nameInput.value);
-      if (!name) { alert('Type your name to remove yourself'); return; }
-      if (!confirm('Remove all occurrences of ' + name + '?')) return;
-      await removeNameFromAll(name);
-      alert('Removed');
-    });
+      // someone else
+      if (p.pendingRemovalAt) {
+        // offer cancel
+        showModal('Cancel pending removal', `Cancel the pending removal for ${p.name}?`, [
+          {label:'No', onClick:()=>{}},
+          {label:'Cancel removal', className:'btn primary', onClick:async ()=> {
+            await peopleRef().child(id + '/pendingRemovalAt').remove();
+          }}
+        ]);
+      } else {
+        // start pending removal (10 minutes)
+        showModal('Start removal timer', `Start a 10 minute removal timer for ${p.name}?`, [
+          {label:'No', onClick:()=>{}},
+          {label:'Start', className:'btn primary', onClick:async ()=> {
+            const when = Date.now() + PENDING_DELAY;
+            await peopleRef().child(id).update({ pendingRemovalAt: when });
+          }}
+        ]);
+      }
+    }
 
-    clearLineBtn.addEventListener('click', () => {
-      if (!confirm('Clear entire line?')) return;
-      db.ref('line').remove();
-    });
-
-    sortByTimeBtn.addEventListener('click', () => {
-      // it's already ordered by ts; just re-render
-      renderLine();
-    });
-
-    // helper: remove entries matching name (exact match)
-    async function removeNameFromAll(name) {
-      // from line
-      const lineSnap = await db.ref('line').orderByChild('name').equalTo(name).once('value');
+    // Periodic cleanup: any entry with pendingRemovalAt <= now should be deleted
+    async function cleanupExpired() {
+      if (!db) return;
+      const now = Date.now();
+      const snap = await peopleRef().once('value');
       const updates = {};
-      lineSnap.forEach(c => updates['line/' + c.key] = null);
-
-      // from registers
-      const regSnap = await db.ref('registers').once('value');
-      regSnap.forEach((c) => {
-        const v = c.val();
-        if (v && v.name === name) updates['registers/' + c.key] = null;
+      let removedMe = false;
+      snap.forEach(child => {
+        const v = child.val();
+        if (!v) return;
+        if (v.pendingRemovalAt && Number(v.pendingRemovalAt) <= now) {
+          updates[child.key] = null; // delete this person
+          if (child.key === clientId) removedMe = true;
+        }
       });
-
-      return db.ref().update(updates);
+      if (Object.keys(updates).length) {
+        // perform deletes
+        const root = db.ref();
+        const multi = {};
+        Object.keys(updates).forEach(k => multi['people/' + k] = null);
+        await root.update(multi);
+      }
+      if (removedMe) {
+        alert('You were removed from the queue');
+        gotoNameScreen();
+      }
     }
 
-    async function dedupeName(name) {
-      // remove any existing same-name items from line or registers (simple)
-      return removeNameFromAll(name);
-    }
-
-    // take next person in line into register i
-    async function takeNextAtRegister(i) {
-      // read first in line
-      const firstSnap = await db.ref('line').orderByChild('ts').limitToFirst(1).once('value');
-      let firstKey = null, firstVal = null;
-      firstSnap.forEach(c => { firstKey = c.key; firstVal = c.val(); });
-      if (!firstKey) { alert('No one in line'); return; }
-
-      // set register and remove from line (non-atomic; acceptable in low-contention)
-      const updates = {};
-      updates['registers/' + i] = { name: firstVal.name, sinceTs: Date.now(), id: firstKey };
-      updates['line/' + firstKey] = null;
-      await db.ref().update(updates);
-    }
-
-    // move a register's person back to the end of the line
-    async function moveRegisterToLine(i) {
-      const rSnap = await db.ref('registers/' + i).once('value');
-      const r = rSnap.val();
-      if (!r) { alert('Register empty'); return; }
-      const newRef = db.ref('line').push();
-      const updates = {};
-      updates['line/' + newRef.key] = { name: r.name, ts: Date.now() };
-      updates['registers/' + i] = null;
-      await db.ref().update(updates);
-    }
-
-    // promote a person (by key) to front of the line (by setting a very low ts)
-    async function promoteLineMember(key) {
-      const snap = await db.ref('line/' + key).once('value');
-      if (!snap.exists()) return;
-      const v = snap.val();
-      // set ts to now - 1 minute to try to put them earlier
-      await db.ref('line/' + key + '/ts').set(Date.now() - 60000);
-    }
-
-    // small helper to escape HTML in names
-    function escapeHtml(s) {
-      return String(s || '').replace(/[&<>"']/g, function(m) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m];
+    // countdown updater: updates countdown displays for pending entries
+    function updateCountdowns() {
+      const els = document.querySelectorAll('.countdown');
+      const now = Date.now();
+      els.forEach(el => {
+        const id = el.dataset.for; const p = people[id];
+        if (!p || !p.pendingRemovalAt) { el.textContent = ''; return; }
+        const rem = Math.max(0, Number(p.pendingRemovalAt) - now);
+        const mm = Math.floor(rem/60000); const ss = Math.floor((rem%60000)/1000);
+        el.textContent = `removes in ${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
       });
     }
 
-    // helper to promote using key (not used on add flow)
-    // When page loads, render initial view
-    renderRegisters();
-    renderLine();
+    // setup Firebase listeners
+    function setupListeners(){
+      if (!db) return;
+      const ref = peopleRef();
+      ref.on('value', snap => {
+        const val = snap.val() || {};
+        people = val;
+        render();
+      });
+    }
+
+    // Move current user to register or to end of line
+    async function moveMeToRegister(){ if(!db) return; await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP }); }
+    async function moveMeToEnd(){ if(!db) return; await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP }); }
+
+    // join by pressing button
+    joinBtn.addEventListener('click', joinLine);
+    // leave button in topbar
+    leaveBtn.addEventListener('click', ()=> showModal('Leave queue','Are you sure you want to leave?',[
+      {label:'Cancel', onClick:()=>{}}, {label:'Leave', className:'btn primary', onClick: () => leaveQueueConfirmed()}]));
+
+    toRegisterBtn.addEventListener('click', async ()=> {
+      // only change our own entry
+      const me = people[clientId]; if (!me) { gotoNameScreen(); return; }
+      await moveMeToRegister();
+    });
+    toEndBtn.addEventListener('click', async ()=> {
+      const me = people[clientId]; if (!me) { gotoNameScreen(); return; }
+      await moveMeToEnd();
+    });
+
+    // Initial flow: if we have an existing DB entry for our clientId, go to queue, else show name screen
+    async function initialCheck(){
+      if (!db) { // firebase not initialized
+        // show name screen so user can paste config later
+        nameScreen.style.display='block';
+        return;
+      }
+      const snap = await myDbRef().once('value');
+      if (snap.exists()) { setupListeners(); showQueueScreen(); }
+      else { nameScreen.style.display='block'; }
+    }
+
+    // Periodic tasks
+    setInterval(()=>{ try{ cleanupExpired(); }catch(e){} }, CLEANUP_INTERVAL);
+    setInterval(updateCountdowns, COUNTDOWN_UPDATE);
+
+    // Watch DB changes to detect if someone else removed me directly
+    if (db) {
+      myDbRef().on('value', snap => {
+        if (!snap.exists()) { if (queueScreen.style.display==='block') { alert('You were removed from the queue'); gotoNameScreen(); } }
+      });
+    }
+
+    // start
+    initialCheck();
 
   </script>
 </body>

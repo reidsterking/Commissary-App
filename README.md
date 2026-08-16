@@ -20,18 +20,23 @@ Commissary Bagger Queue — quick setup
    - Quick: Upload index.html to any static host (GitHub Pages, Netlify, plain web server).
    - Or use Firebase Hosting (I can add files but you must run firebase init/deploy with your Firebase project and replace firebaseConfig in index.html).
 
-4) Usage
-   - Open the page on any device.
-   - Enter your name, choose "In line" or "At a register", then Add.
-   - Other devices will see changes instantaneously.
+4) Usage (updated)
+   - First visit: enter your name and tap "Join the line". The page will generate a client id and remember your name so reloading keeps your spot.
+   - After joining you’ll see the Queue screen with a sticky top bar showing your live status (# in line or At the register), a scrollable list showing "At the Register" and "In Line" groups, and a sticky bottom action bar with two buttons: "Move to Register" and "Move to End of Line" which affect only your entry.
+   - Tap your own name (in the top bar or your row) to immediately leave the queue (confirmation modal). Tapping someone else starts a 10-minute pending removal (or cancels it if already pending). Pending removals are visible to everyone with a live mm:ss countdown. Clients automatically delete entries once the pending timer expires.
 
 Notes & improvements
- - The "Take Next" operation reads then writes; if two people click "Take Next" at the same moment there is a small chance they both pull the same person. If you need strict atomicity, I can update the app to use Firebase transactions or a Cloud Function to guarantee atomic move-of-first-item.
- - I can add authentication (e.g., sign-in) so only staff can modify registers, or add a small admin UI for skipping people, reordering, or auto-assign rules.
+ - The app uses Firebase Realtime Database. The data model for each person is:
+     {
+       name: string,
+       status: 'line' | 'register',
+       ts: server timestamp (for ordering),
+       pendingRemovalAt: number | null (ms since epoch when deletion will occur)
+     }
+ - I kept the firebaseConfig placeholder in index.html exactly as before so you can paste your real config.
+ - If you want, I can:
+    - Insert your firebaseConfig for you and push the update.
+    - Add authentication to restrict actions to staff.
+    - Make pending-removal use server-calculated timestamps for tighter correctness.
 
-If you want, I can:
- - Deploy these files to a GitHub repo and optionally set up GitHub Pages or Firebase Hosting for you.
- - Add atomic transaction behavior for Take Next.
- - Add optional sign-in so only authorized users can change registers.
-
-Which would you like me to do next?
+Which of the above would you like next?
