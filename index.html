@@ -44,7 +44,7 @@
     .btn.primary{background:var(--accent);color:white}
     .btn.secondary{background:#f1f5f9;color:#111}
 
-    /* Name / password screen */
+    /* Name / password / closed screen */
     .name-screen{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:20px}
     input[type=text],input[type=password]{padding:14px;border-radius:10px;border:1px solid #e6e9ee;font-size:1rem}
     .center{display:flex;justify-content:center}
@@ -94,6 +94,12 @@
 
   <!-- Main content area -->
   <main class="content">
+    <!-- Closed screen (shown when admin has turned the queue off) -->
+    <div id="closedScreen" class="name-screen" style="display:none">
+      <h2>Queue is currently closed</h2>
+      <p class="muted">Please check back later.</p>
+    </div>
+
     <!-- Password gate -->
     <div id="passwordScreen" class="name-screen" style="display:none">
       <h2>Enter the queue password</h2>
@@ -153,6 +159,7 @@
     const LS_AUTH = 'comm_auth';
 
     // UI elements
+    const closedScreen = document.getElementById('closedScreen');
     const passwordScreen = document.getElementById('passwordScreen');
     const passwordInput = document.getElementById('passwordInput');
     const passwordBtn = document.getElementById('passwordBtn');
@@ -176,8 +183,10 @@
     // State
     let clientId = localStorage.getItem(LS_CLIENT) || null;
     let myName = localStorage.getItem(LS_NAME) || '';
-    let people = {}; // {id: {name,status,ts,pendingRemovalAt}}
+    let people = {}; // {id: {name,status,ts,pendingRemovalAt,order}}
     let meWatchRef = null; // live ref watching our own entry, re-pointed if we reclaim a different id
+    let siteEnabled = true; // live-updated from DB; admin can flip this off to close the queue
+    let appStarted = false;
 
     // Initialize local client id if missing
     if (!clientId) {
@@ -214,6 +223,11 @@
 
     function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
 
+    // Turn a typed name into a Firebase-key-safe, case-insensitive identifier.
+    // Used to look people up in the blockedNames list. Must match the logic
+    // used in admin.html exactly, or blocking won't line up.
+    function sanitizeKey(s){ return String(s||'').trim().toLowerCase().replace(/[.#$\[\]\/]/g, '_'); }
+
     // DB helpers
     function peopleRef(){ return db.ref('people'); }
     function myDbRef(){ return db.ref('people/' + clientId); }
@@ -225,7 +239,10 @@
       if (meWatchRef) { try { meWatchRef.off(); } catch(e){} }
       meWatchRef = myDbRef();
       meWatchRef.on('value', snap => {
-        if (!snap.exists()) { if (queueScreen.style.display==='block') { alert('You were removed from the queue'); gotoNameScreen(); } }
+        if (!snap.exists()) {
+          if (siteEnabled === false) return; // closed-screen flow already handles this case
+          if (queueScreen.style.display==='block') { alert('You were removed from the queue'); gotoNameScreen(); }
+        }
       });
     }
 
@@ -233,6 +250,18 @@
       if (!db) { alert('Realtime DB not configured yet. Paste firebaseConfig in the page.'); return; }
       myName = nameInput.value.trim();
       if (!myName) { alert('Type your name'); return; }
+
+      // Check the block list before letting anyone join.
+      const nameKey = sanitizeKey(myName);
+      const [blockedNameSnap, blockedClientSnap] = await Promise.all([
+        db.ref('blockedNames/' + nameKey).once('value'),
+        db.ref('blockedClients/' + clientId).once('value')
+      ]);
+      if (blockedNameSnap.exists() || blockedClientSnap.exists()) {
+        alert('You are unable to join the queue. Please see a staff member.');
+        return;
+      }
+
       localStorage.setItem(LS_NAME, myName);
 
       // If someone with this name already has an entry (e.g. they lost their local
@@ -281,6 +310,15 @@
       bottomBar.style.display='flex';
     }
 
+    function showClosedScreen(){
+      passwordScreen.style.display='none';
+      nameScreen.style.display='none';
+      queueScreen.style.display='none';
+      topbar.style.display='none';
+      bottomBar.style.display='none';
+      closedScreen.style.display='block';
+    }
+
     // Render UI from people state
     function render() {
       // build arrays
@@ -291,8 +329,11 @@
         if (p.status === 'register') regs.push({id, ...p});
         else line.push({id, ...p});
       });
-      regs.sort((a,b)=> (a.ts||0)-(b.ts||0));
-      line.sort((a,b)=> (a.ts||0)-(b.ts||0));
+      // sort by admin-assigned "order" when present (drag-and-drop in the admin
+      // panel writes this), falling back to join time otherwise.
+      const sortKey = p => (p.order != null ? p.order : (p.ts || 0));
+      regs.sort((a,b)=> sortKey(a)-sortKey(b));
+      line.sort((a,b)=> sortKey(a)-sortKey(b));
 
       // topbar current user
       const me = people[clientId];
@@ -413,6 +454,7 @@
         await root.update(multi);
       }
       if (removedMe) {
+        if (siteEnabled === false) return;
         alert('You were removed from the queue');
         gotoNameScreen();
       }
@@ -465,6 +507,7 @@
 
     // Password gate
     function checkPasswordAndStart(){
+      if (siteEnabled === false) { showClosedScreen(); return; }
       if (localStorage.getItem(LS_AUTH) === 'true') {
         initialCheck();
       } else {
@@ -497,12 +540,38 @@
       else { nameScreen.style.display='block'; }
     }
 
+    // Live "is the queue open" switch, controlled from the admin panel.
+    // Missing/null is treated as open, so nothing changes until an admin
+    // panel actually writes to this path for the first time.
+    function handleSiteStatus(enabled){
+      siteEnabled = enabled;
+      if (!siteEnabled) {
+        showClosedScreen();
+        appStarted = true;
+        return;
+      }
+      if (!appStarted) {
+        appStarted = true;
+        checkPasswordAndStart();
+      } else if (closedScreen.style.display === 'block') {
+        closedScreen.style.display = 'none';
+        checkPasswordAndStart();
+      }
+    }
+
     // Periodic tasks
     setInterval(()=>{ try{ cleanupExpired(); }catch(e){} }, CLEANUP_INTERVAL);
     setInterval(updateCountdowns, COUNTDOWN_UPDATE);
 
     // start
-    checkPasswordAndStart();
+    if (db) {
+      db.ref('siteStatus/enabled').on('value', snap => {
+        const val = snap.val();
+        handleSiteStatus(val === false ? false : true);
+      });
+    } else {
+      checkPasswordAndStart();
+    }
 
   </script>
 </body>
