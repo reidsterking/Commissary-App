@@ -9,6 +9,10 @@
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="Luke AFB Bagger Queue" />
+  <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
+       polls for this to change and auto-reloads, so it can never keep running
+       old logic (missed bug fixes, missing features) indefinitely. -->
+  <meta name="app-version" content="2026-08-17-3" />
   <style>
     :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
     *{box-sizing:border-box}
@@ -143,6 +147,21 @@
   <div id="modalRoot"></div>
 
   <script>
+    // Auto-reload if a newer version has been deployed. A tab left open on a
+    // register indefinitely would otherwise keep running whatever code was
+    // live when it first loaded — including missing any future bug fixes.
+    const CURRENT_VERSION = document.querySelector('meta[name="app-version"]').content;
+    async function checkForUpdate(){
+      try {
+        const res = await fetch(location.pathname, { cache: 'no-store' });
+        const text = await res.text();
+        const m = text.match(/name="app-version" content="([^"]+)"/);
+        if (m && m[1] && m[1] !== CURRENT_VERSION) location.reload();
+      } catch (e) { /* offline or blocked; try again next interval */ }
+    }
+    setInterval(checkForUpdate, 60000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); });
+
     // App config
     const CLEANUP_INTERVAL = 5000; // ms to check for expired pending removals
     const COUNTDOWN_UPDATE = 1000; // update countdown every second
@@ -251,11 +270,15 @@
       myName = nameInput.value.trim();
       if (!myName) { alert('Type your name'); return; }
 
-      // Check the block list before letting anyone join.
+      // Check the block list, and look up any existing entry with this name (for
+      // the reclaim flow below), in one parallel round trip. Doing these together
+      // instead of sequentially shrinks — but does not fully close — the window
+      // where an admin block and a join could race each other.
       const nameKey = sanitizeKey(myName);
-      const [blockedNameSnap, blockedClientSnap] = await Promise.all([
+      const [blockedNameSnap, blockedClientSnap, peopleSnap] = await Promise.all([
         db.ref('blockedNames/' + nameKey).once('value'),
-        db.ref('blockedClients/' + clientId).once('value')
+        db.ref('blockedClients/' + clientId).once('value'),
+        peopleRef().once('value')
       ]);
       if (blockedNameSnap.exists() || blockedClientSnap.exists()) {
         alert('You are unable to join the queue. Please see a staff member.');
@@ -267,8 +290,7 @@
       // If someone with this name already has an entry (e.g. they lost their local
       // identity by opening the site in a new browser/tab), reclaim that entry
       // instead of creating a duplicate that would need a 10 minute timer to clear.
-      const snap = await peopleRef().once('value');
-      const all = snap.val() || {};
+      const all = peopleSnap.val() || {};
       let existingId = null;
       Object.keys(all).forEach(id => {
         const v = all[id];
@@ -484,9 +506,12 @@
       });
     }
 
-    // Move current user to register or to end of line
-    async function moveMeToRegister(){ if(!db) return; await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP }); }
-    async function moveMeToEnd(){ if(!db) return; await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP }); }
+    // Move current user to register or to end of line. Firebase's update() will
+    // silently RE-CREATE a deleted node if it doesn't check first — guard against
+    // that so a removed/blocked person's tab can't resurrect their entry just by
+    // tapping one of these buttons.
+    async function moveMeToRegister(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP }); }
+    async function moveMeToEnd(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP }); }
 
     // join by pressing button
     joinBtn.addEventListener('click', joinLine);
