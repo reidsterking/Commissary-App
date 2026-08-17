@@ -12,7 +12,7 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-9" />
+  <meta name="app-version" content="2026-08-17-10" />
   <!-- Lets a phone "Add to Home Screen" this as a real app icon, instead of a
        plain browser bookmark. Deliberately no service worker here — a
        misconfigured service worker cache is exactly the kind of thing that
@@ -58,6 +58,7 @@
     .pending{opacity:0.5}
     .countdown{color:var(--muted);font-size:0.9rem;margin-left:8px}
     .admin-tag{color:var(--accent);font-weight:600}
+    .skip-tag{color:var(--danger);font-weight:600}
 
     /* Bottom sticky action bar */
     .bottombar{position:sticky;bottom:0;background:var(--card);padding:12px;display:flex;gap:8px;border-top:1px solid #e6e9ee;flex-wrap:wrap}
@@ -470,7 +471,10 @@
         const adminTag = p.movedByAdmin ? ' <span class="admin-tag">(Moved by admin)</span>' : '';
         const posTag = timeLabel === 'Joined:' ? `<div class=\"meta\">#${idx+1}</div>` : '';
         const iconPrefix = p.icon ? `<span class=\"icon-prefix\">${escapeHtml(p.icon)}</span>` : '';
-        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${iconPrefix}${escapeHtml(p.name)}</div>${posTag}</div><div class=\"meta\">${timeLabel} ${timeAgo(p.ts)}${adminTag}</div></div><div class=\"right\"></div>`;
+        // Only the person at the front of the line can have been "skipped" —
+        // someone else called to a register while they were still waiting.
+        const skipTag = (timeLabel === 'Joined:' && idx === 0 && p.skippedCount) ? ` <span class=\"skip-tag\">(Skipped ${p.skippedCount}x)</span>` : '';
+        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${iconPrefix}${escapeHtml(p.name)}${skipTag}</div>${posTag}</div><div class=\"meta\">${timeLabel} ${timeAgo(p.ts)}${adminTag}</div></div><div class=\"right\"></div>`;
         r.onclick = ()=> onRowClick(p.id);
         if (p.pendingRemovalAt) r.classList.add('pending');
         if (p.pendingRemovalAt) {
