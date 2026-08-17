@@ -12,7 +12,7 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-11" />
+  <meta name="app-version" content="2026-08-17-12" />
   <!-- Lets a phone "Add to Home Screen" this as a real app icon, instead of a
        plain browser bookmark. Deliberately no service worker here — a
        misconfigured service worker cache is exactly the kind of thing that
@@ -366,6 +366,8 @@
     // Used to look people up in the blockedNames list. Must match the logic
     // used in admin.html exactly, or blocking won't line up.
     function sanitizeKey(s){ return String(s||'').trim().toLowerCase().replace(/[.#$\[\]\/]/g, '_'); }
+    // Must match rosterKey() in the admin panel exactly, or roster lookups won't line up.
+    function rosterKey(name, number){ return sanitizeKey(name) + '__' + number; }
 
     // DB helpers
     function peopleRef(){ return db.ref('people'); }
@@ -394,49 +396,53 @@
       if (!myBaggerNumber) { alert('Enter your bagger number'); return; }
       if (!/^[0-9]{1,3}$/.test(myBaggerNumber)) { alert('Bagger number must be numbers only, up to 3 digits'); return; }
 
-      // Check the block list, and look up any existing entry with this name (for
-      // the reclaim flow below), in one parallel round trip. Doing these together
-      // instead of sequentially shrinks — but does not fully close — the window
-      // where an admin block and a join could race each other. The admin panel
-      // also runs a continuous self-healing check that re-removes anyone who
-      // slips through this window, so a slipped-through join doesn't stick.
+      // Check the roster, the block list, and whether this exact person is
+      // already active in the queue, in one parallel round trip. Doing these
+      // together instead of sequentially shrinks — but does not fully close —
+      // the window where an admin block and a join could race each other.
+      // The admin panel also runs a continuous self-healing check that
+      // re-removes anyone who slips through this window, so a slipped-through
+      // join doesn't stick.
       const nameKey = sanitizeKey(myName);
-      const [blockedNameSnap, blockedClientSnap, peopleSnap] = await Promise.all([
+      const [rosterSnap, blockedNameSnap, blockedClientSnap, peopleSnap] = await Promise.all([
+        db.ref('roster/' + rosterKey(myName, myBaggerNumber)).once('value'),
         db.ref('blockedNames/' + nameKey).once('value'),
         db.ref('blockedClients/' + clientId).once('value'),
         peopleRef().once('value')
       ]);
+      if (!rosterSnap.exists()) {
+        alert("That name and bagger number aren't on the roster. Please see a staff member to be added.");
+        return;
+      }
       if (blockedNameSnap.exists() || blockedClientSnap.exists()) {
         alert('You are unable to join the queue. Please see a staff member.');
+        return;
+      }
+
+      // Only one active queue entry per roster person, ever, at a time — if
+      // this name+number combination already has an entry (someone else's
+      // device, or this same person still active from before), reject rather
+      // than silently taking over or duplicating it. A device that already
+      // has its own active entry never reaches this screen in the first place
+      // (initialCheck() routes straight to the queue screen), so any match
+      // found here belongs to a different clientId. If someone genuinely
+      // lost their device mid-queue, an admin can kick their stale entry to
+      // free up their spot again.
+      const all = peopleSnap.val() || {};
+      const alreadyActive = Object.keys(all).some(id => {
+        const v = all[id];
+        return v && v.name && v.name.trim().toLowerCase() === myName.toLowerCase() && (v.baggerNumber || '') === myBaggerNumber;
+      });
+      if (alreadyActive) {
+        alert('That bagger is already in the queue. See a staff member if this seems wrong.');
         return;
       }
 
       localStorage.setItem(LS_NAME, myName);
       localStorage.setItem(LS_BAGGER_NUMBER, myBaggerNumber);
 
-      // If someone with this name AND bagger number already has an entry (e.g.
-      // they lost their local identity by opening the site in a new browser/tab),
-      // reclaim that entry instead of creating a duplicate that would need a
-      // 10 minute timer to clear. Matching on both fields (not just name) avoids
-      // two different baggers who happen to share a first name reclaiming each
-      // other's spot in line.
-      const all = peopleSnap.val() || {};
-      let existingId = null;
-      Object.keys(all).forEach(id => {
-        const v = all[id];
-        if (v && v.name && v.name.trim().toLowerCase() === myName.toLowerCase() && (v.baggerNumber || '') === myBaggerNumber) existingId = id;
-      });
-
-      if (existingId) {
-        clientId = existingId;
-        localStorage.setItem(LS_CLIENT, clientId);
-        if (all[existingId].pendingRemovalAt) {
-          await peopleRef().child(existingId + '/pendingRemovalAt').remove();
-        }
-      } else {
-        const data = { name: myName, baggerNumber: myBaggerNumber, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null, movedByAdmin: false };
-        await myDbRef().set(data);
-      }
+      const data = { name: myName, baggerNumber: myBaggerNumber, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null, movedByAdmin: false };
+      await myDbRef().set(data);
 
       watchMe();
       setupListeners();
