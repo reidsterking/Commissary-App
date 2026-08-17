@@ -12,7 +12,7 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-4" />
+  <meta name="app-version" content="2026-08-17-5" />
   <style>
     :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
     *{box-sizing:border-box}
@@ -41,10 +41,11 @@
     .row button{background:transparent;border:none;color:var(--accent);font-weight:600}
     .pending{opacity:0.5}
     .countdown{color:var(--muted);font-size:0.9rem;margin-left:8px}
+    .admin-tag{color:var(--accent);font-weight:600}
 
     /* Bottom sticky action bar */
-    .bottombar{position:sticky;bottom:0;background:var(--card);padding:12px;display:flex;gap:12px;border-top:1px solid #e6e9ee}
-    .btn{flex:1;padding:12px;border-radius:8px;border:none;font-weight:700;font-size:1rem}
+    .bottombar{position:sticky;bottom:0;background:var(--card);padding:12px;display:flex;gap:8px;border-top:1px solid #e6e9ee;flex-wrap:wrap}
+    .btn{flex:1;min-width:100px;padding:12px;border-radius:8px;border:none;font-weight:700;font-size:0.95rem}
     .btn.primary{background:var(--accent);color:white}
     .btn.secondary{background:#f1f5f9;color:#111}
 
@@ -134,6 +135,11 @@
         <h3>In Line</h3>
         <div id="lineList" class="list"></div>
       </section>
+
+      <section class="group">
+        <h3>On Break</h3>
+        <div id="breakList" class="list"></div>
+      </section>
     </div>
   </main>
 
@@ -141,6 +147,7 @@
   <div id="bottomBar" class="bottombar" style="display:none">
     <button id="toRegisterBtn" class="btn primary">Move to Register</button>
     <button id="toEndBtn" class="btn secondary">Move to End of Line</button>
+    <button id="toBreakBtn" class="btn secondary">Take a Break</button>
   </div>
 
   <!-- Modal container -->
@@ -195,14 +202,16 @@
     const leaveBtn = document.getElementById('leaveBtn');
     const registerList = document.getElementById('registerList');
     const lineList = document.getElementById('lineList');
+    const breakList = document.getElementById('breakList');
     const toRegisterBtn = document.getElementById('toRegisterBtn');
     const toEndBtn = document.getElementById('toEndBtn');
+    const toBreakBtn = document.getElementById('toBreakBtn');
     const modalRoot = document.getElementById('modalRoot');
 
     // State
     let clientId = localStorage.getItem(LS_CLIENT) || null;
     let myName = localStorage.getItem(LS_NAME) || '';
-    let people = {}; // {id: {name,status,ts,pendingRemovalAt,order}}
+    let people = {}; // {id: {name,status,ts,pendingRemovalAt,order,movedByAdmin}}
     let meWatchRef = null; // live ref watching our own entry, re-pointed if we reclaim a different id
     let siteEnabled = true; // live-updated from DB; admin can flip this off to close the queue
     let appStarted = false;
@@ -225,6 +234,12 @@
       // If firebaseConfig is placeholder the SDK will throw here; that's expected until you add real config
       console.warn('Firebase init failed (placeholders likely):', e.message);
       window.db = null;
+    }
+
+    // Log an event to the shared activity log the admin panel displays. Fire-and-forget.
+    function logActivity(type, name){
+      if (!db) return;
+      db.ref('activityLog').push({ type, name, ts: firebase.database.ServerValue.TIMESTAMP }).catch(()=>{});
     }
 
     // Utility: show modal
@@ -267,13 +282,16 @@
 
     async function joinLine() {
       if (!db) { alert('Realtime DB not configured yet. Paste firebaseConfig in the page.'); return; }
+      if (siteEnabled === false) { showClosedScreen(); return; }
       myName = nameInput.value.trim();
       if (!myName) { alert('Type your name'); return; }
 
       // Check the block list, and look up any existing entry with this name (for
       // the reclaim flow below), in one parallel round trip. Doing these together
       // instead of sequentially shrinks — but does not fully close — the window
-      // where an admin block and a join could race each other.
+      // where an admin block and a join could race each other. The admin panel
+      // also runs a continuous self-healing check that re-removes anyone who
+      // slips through this window, so a slipped-through join doesn't stick.
       const nameKey = sanitizeKey(myName);
       const [blockedNameSnap, blockedClientSnap, peopleSnap] = await Promise.all([
         db.ref('blockedNames/' + nameKey).once('value'),
@@ -304,7 +322,7 @@
           await peopleRef().child(existingId + '/pendingRemovalAt').remove();
         }
       } else {
-        const data = { name: myName, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null };
+        const data = { name: myName, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null, movedByAdmin: false };
         await myDbRef().set(data);
       }
 
@@ -315,7 +333,9 @@
 
     async function leaveQueueConfirmed() {
       if (!db) return gotoNameScreen();
+      const me = people[clientId];
       await myDbRef().remove();
+      if (me && me.name) logActivity('self_leave', me.name);
       gotoNameScreen();
     }
 
@@ -341,14 +361,35 @@
       closedScreen.style.display='block';
     }
 
+    // Render one section's rows into `container`. `timeLabel` distinguishes the
+    // "since HH:MM" vs "Joined: HH:MM" phrasing already used per section.
+    function renderGroup(container, arr, emptyText, timeLabel){
+      container.innerHTML = '';
+      if (arr.length === 0) { container.innerHTML = `<div class="row"><div class="left"><div class="who muted">${emptyText}</div></div></div>`; return; }
+      arr.forEach((p, idx) => {
+        const r = document.createElement('div'); r.className='row';
+        const adminTag = p.movedByAdmin ? ' <span class="admin-tag">(Moved by admin)</span>' : '';
+        const posTag = timeLabel === 'Joined:' ? `<div class=\"meta\">#${idx+1}</div>` : '';
+        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${escapeHtml(p.name)}</div>${posTag}</div><div class=\"meta\">${timeLabel} ${timeAgo(p.ts)}${adminTag}</div></div><div class=\"right\"></div>`;
+        r.onclick = ()=> onRowClick(p.id);
+        if (p.pendingRemovalAt) r.classList.add('pending');
+        if (p.pendingRemovalAt) {
+          const cd = document.createElement('div'); cd.className='countdown'; cd.dataset.for = p.id; r.querySelector('.right').appendChild(cd);
+        }
+        if (p.id===clientId) r.style.background='#f8fbff';
+        container.appendChild(r);
+      });
+    }
+
     // Render UI from people state
     function render() {
       // build arrays
-      const regs = [], line = [];
+      const regs = [], line = [], brk = [];
       Object.keys(people).forEach(id => {
         const p = people[id];
         if (!p) return;
         if (p.status === 'register') regs.push({id, ...p});
+        else if (p.status === 'break') brk.push({id, ...p});
         else line.push({id, ...p});
       });
       // sort by admin-assigned "order" when present (drag-and-drop in the admin
@@ -356,6 +397,7 @@
       const sortKey = p => (p.order != null ? p.order : (p.ts || 0));
       regs.sort((a,b)=> sortKey(a)-sortKey(b));
       line.sort((a,b)=> sortKey(a)-sortKey(b));
+      brk.sort((a,b)=> sortKey(a)-sortKey(b));
 
       // topbar current user
       const me = people[clientId];
@@ -364,6 +406,7 @@
         meNameEl.textContent = me.name || 'You';
         let statusText = '';
         if (me.status === 'register') statusText = 'At the register';
+        else if (me.status === 'break') statusText = 'On break';
         else {
           const pos = line.findIndex(p=>p.id===clientId);
           statusText = pos>=0 ? `#${pos+1} in line` : 'In line';
@@ -372,37 +415,9 @@
         meStatusEl.textContent = statusText;
       }
 
-      // registers list
-      registerList.innerHTML = '';
-      if (regs.length===0) registerList.innerHTML = '<div class="row"><div class="left"><div class="who muted">No one at registers</div></div></div>';
-      regs.forEach(p => {
-        const r = document.createElement('div'); r.className='row';
-        r.innerHTML = `<div class=\"left\"><div class=\"who\">${escapeHtml(p.name)}</div><div class=\"meta\">since ${timeAgo(p.ts)}</div></div><div class=\"right\"></div>`;
-        // attach click handlers
-        r.onclick = (e)=> onRowClick(p.id);
-        if (p.pendingRemovalAt) r.classList.add('pending');
-        if (p.id===clientId) r.style.background='#f8fbff';
-        // append countdown if pending
-        if (p.pendingRemovalAt) {
-          const cd = document.createElement('div'); cd.className='countdown'; cd.dataset.for = p.id; r.querySelector('.right').appendChild(cd);
-        }
-        registerList.appendChild(r);
-      });
-
-      // line list
-      lineList.innerHTML = '';
-      if (line.length===0) lineList.innerHTML = '<div class="row"><div class="left"><div class="who muted">No one in line</div></div></div>';
-      line.forEach((p, idx) => {
-        const r = document.createElement('div'); r.className='row';
-        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${escapeHtml(p.name)}</div><div class=\"meta\">#${idx+1}</div></div><div class=\"meta\">Joined: ${timeAgo(p.ts)}</div></div><div class=\"right\"></div>`;
-        r.onclick = ()=> onRowClick(p.id);
-        if (p.pendingRemovalAt) r.classList.add('pending');
-        if (p.pendingRemovalAt) {
-          const cd = document.createElement('div'); cd.className='countdown'; cd.dataset.for = p.id; r.querySelector('.right').appendChild(cd);
-        }
-        if (p.id===clientId) r.style.background='#f8fbff';
-        lineList.appendChild(r);
-      });
+      renderGroup(registerList, regs, 'No one at registers', 'since');
+      renderGroup(lineList, line, 'No one in line', 'Joined:');
+      renderGroup(breakList, brk, 'No one on break', 'since');
 
       // show top/bottom if me present
       if (me) { topbar.style.display='flex'; bottomBar.style.display='flex'; }
@@ -412,6 +427,9 @@
     function timeAgo(ts){ if(!ts) return ''; const d = new Date(ts); return d.toLocaleTimeString(); }
 
     // clicking a row: if it's me -> cancel my own timer or leave; else -> set pendingRemovalAt or cancel
+    // (deliberately: this is the ONLY way another person's row can be acted on from
+    // here — there is no "move someone else to break" option, by design: only the
+    // person themselves can put themselves on break, via the bottom bar button.)
     function onRowClick(id) {
       const p = people[id]; if(!p) return;
       if (id === clientId) {
@@ -453,32 +471,38 @@
       }
     }
 
-    // Periodic cleanup: any entry with pendingRemovalAt <= now should be deleted
+    // Periodic cleanup: any entry with pendingRemovalAt <= now should be deleted.
+    // Uses a per-node transaction so that if several open tabs all notice the same
+    // expired entry at once, only the one whose write actually lands on the server
+    // logs the event — otherwise a busy queue could log the same removal 3-4 times.
     async function cleanupExpired() {
       if (!db) return;
       const now = Date.now();
       const snap = await peopleRef().once('value');
-      const updates = {};
-      let removedMe = false;
+      const toCheck = [];
       snap.forEach(child => {
         const v = child.val();
-        if (!v) return;
-        if (v.pendingRemovalAt && Number(v.pendingRemovalAt) <= now) {
-          updates[child.key] = null; // delete this person
-          if (child.key === clientId) removedMe = true;
+        if (v && v.pendingRemovalAt && Number(v.pendingRemovalAt) <= now) {
+          toCheck.push({ id: child.key, name: v.name });
         }
       });
-      if (Object.keys(updates).length) {
-        // perform deletes
-        const root = db.ref();
-        const multi = {};
-        Object.keys(updates).forEach(k => multi['people/' + k] = null);
-        await root.update(multi);
-      }
-      if (removedMe) {
-        if (siteEnabled === false) return;
-        alert('You were removed from the queue');
-        gotoNameScreen();
+      for (const entry of toCheck) {
+        const ref = peopleRef().child(entry.id);
+        ref.transaction(current => {
+          if (current && current.pendingRemovalAt && Number(current.pendingRemovalAt) <= Date.now()) {
+            return null; // this call performs the delete
+          }
+          return undefined; // already gone (someone else's transaction won) or no longer expired — abort
+        }, (error, committed) => {
+          if (!error && committed) {
+            logActivity('timer', entry.name);
+            if (entry.id === clientId) {
+              if (siteEnabled === false) return;
+              alert('You were removed from the queue');
+              gotoNameScreen();
+            }
+          }
+        });
       }
     }
 
@@ -506,12 +530,13 @@
       });
     }
 
-    // Move current user to register or to end of line. Firebase's update() will
-    // silently RE-CREATE a deleted node if it doesn't check first — guard against
-    // that so a removed/blocked person's tab can't resurrect their entry just by
-    // tapping one of these buttons.
-    async function moveMeToRegister(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP }); }
-    async function moveMeToEnd(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP }); }
+    // Move current user to register/line/break. Firebase's update() will silently
+    // RE-CREATE a deleted node if it doesn't check first — guard against that so a
+    // removed/blocked person's tab can't resurrect their entry just by tapping one
+    // of these buttons. Also clears movedByAdmin, since this move is self-initiated.
+    async function moveMeToRegister(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false }); }
+    async function moveMeToEnd(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false }); }
+    async function moveMeToBreak(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'break', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false }); }
 
     // join by pressing button
     joinBtn.addEventListener('click', joinLine);
@@ -528,6 +553,10 @@
     toEndBtn.addEventListener('click', async ()=> {
       const me = people[clientId]; if (!me) { gotoNameScreen(); return; }
       await moveMeToEnd();
+    });
+    toBreakBtn.addEventListener('click', async ()=> {
+      const me = people[clientId]; if (!me) { gotoNameScreen(); return; }
+      await moveMeToBreak();
     });
 
     // Password gate
