@@ -12,7 +12,20 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-8" />
+  <meta name="app-version" content="2026-08-17-9" />
+  <!-- Lets a phone "Add to Home Screen" this as a real app icon, instead of a
+       plain browser bookmark. Deliberately no service worker here — a
+       misconfigured service worker cache is exactly the kind of thing that
+       could serve stale code forever, which is a mistake this app has
+       already been burned by once this session (see baggerqueue.web.app
+       history) — not worth the risk for what's otherwise just a cosmetic
+       upgrade. "Add to Home Screen" from the browser menu works fine without one. -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Bagger Queue" />
+  <meta name="theme-color" content="#0066cc" />
   <style>
     :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
     *{box-sizing:border-box}
@@ -29,6 +42,7 @@
     .username{font-size:1.05rem;font-weight:600}
     .status{color:var(--muted);font-size:0.9rem}
     .topbar button{background:transparent;border:none;color:var(--danger);font-weight:600}
+    .topbar #muteBtn{color:var(--muted);font-size:1.1rem;font-weight:400;padding:4px}
 
     /* Main scroll area */
     .content{flex:1;overflow:auto;padding:12px}
@@ -93,7 +107,8 @@
         <div class="username" id="meName">Your name</div>
         <div class="status" id="meStatus">#3 in line</div>
       </div>
-      <div>
+      <div style="display:flex;align-items:center;gap:4px">
+        <button id="muteBtn" title="Mute status alert sound">🔔</button>
         <button id="leaveBtn">Leave</button>
       </div>
     </div>
@@ -176,10 +191,14 @@
     const COUNTDOWN_UPDATE = 1000; // update countdown every second
     const PENDING_DELAY = 10 * 60 * 1000; // 10 minutes in ms
 
-    // Change this to whatever password you want baggers to use to join the queue.
-    // It's checked in the browser only (this is a static site with no server),
-    // so it keeps casual customers out but is not real security.
-    const ACCESS_PASSWORD = "bagger!";
+    // The join password now lives in the database (siteStatus/password) so the
+    // admin panel can change it without a code deploy. It's still only ever
+    // checked in the browser (this is a static site with no server), so it
+    // keeps casual customers out but is not real security — same as before.
+    // This fallback is only used before the live value has arrived, or if the
+    // admin panel has never explicitly set one yet.
+    let currentPassword = 'bagger!';
+    let passwordKnown = false;
 
     // Local storage keys
     const LS_CLIENT = 'comm_clientId';
@@ -203,6 +222,7 @@
     const meNameEl = document.getElementById('meName');
     const meStatusEl = document.getElementById('meStatus');
     const leaveBtn = document.getElementById('leaveBtn');
+    const muteBtn = document.getElementById('muteBtn');
     const registerList = document.getElementById('registerList');
     const lineList = document.getElementById('lineList');
     const breakList = document.getElementById('breakList');
@@ -548,7 +568,10 @@
     // app with real push infrastructure, which this static site doesn't
     // have) — the chime/banner is the fallback for that case, but only while
     // the tab itself is open and visible.
+    const LS_MUTE = 'comm_mute_sound';
+    let soundMuted = localStorage.getItem(LS_MUTE) === 'true';
     function playChime(){
+      if (soundMuted) return;
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const o = ctx.createOscillator(); const g = ctx.createGain();
@@ -714,6 +737,17 @@
       {label:'Cancel', onClick:()=>{}}, {label:'Leave', className:'btn primary', onClick: () => leaveQueueConfirmed()}]));
     avatarEl.addEventListener('click', showIconEditor);
 
+    function updateMuteBtn(){
+      muteBtn.textContent = soundMuted ? '🔕' : '🔔';
+      muteBtn.title = soundMuted ? 'Unmute status alert sound' : 'Mute status alert sound';
+    }
+    updateMuteBtn();
+    muteBtn.addEventListener('click', () => {
+      soundMuted = !soundMuted;
+      localStorage.setItem(LS_MUTE, String(soundMuted));
+      updateMuteBtn();
+    });
+
     toRegisterBtn.addEventListener('click', async ()=> {
       // only change our own entry
       const me = people[clientId]; if (!me) { gotoNameScreen(); return; }
@@ -762,7 +796,7 @@
     }
     passwordBtn.addEventListener('click', () => {
       const val = passwordInput.value;
-      if (val === ACCESS_PASSWORD) {
+      if (val === currentPassword) {
         localStorage.setItem(LS_AUTH, 'true');
         localStorage.setItem(LS_AUTH_VERSION, String(authVersion || 0));
         passwordScreen.style.display = 'none';
@@ -818,12 +852,21 @@
       if (changed && !isLocallyAuthed()) forceReauth();
     }
 
-    // The very first screen shown depends on both whether the queue is open
-    // and what the current auth version is — wait until both are known at
-    // least once before deciding, so a slow-to-arrive authVersion value can't
-    // let a stale-but-locally-"authed" browser slip past the password screen.
+    // Live join-password switch, controlled from the admin panel. Missing
+    // means the admin panel has never explicitly set one, so the built-in
+    // default above is used.
+    function handlePassword(pw){
+      currentPassword = pw || 'bagger!';
+      passwordKnown = true;
+      if (!appStarted) tryStart();
+    }
+
+    // The very first screen shown depends on whether the queue is open, what
+    // the current auth version is, and what the current password is — wait
+    // until all three are known at least once before deciding, so a
+    // slow-to-arrive value can't let a stale browser slip past the gate.
     function tryStart(){
-      if (!enabledKnown || !authVersionKnown || appStarted) return;
+      if (!enabledKnown || !authVersionKnown || !passwordKnown || appStarted) return;
       appStarted = true;
       checkPasswordAndStart();
     }
@@ -841,8 +884,11 @@
       db.ref('siteStatus/authVersion').on('value', snap => {
         handleAuthVersion(snap.val());
       });
+      db.ref('siteStatus/password').on('value', snap => {
+        handlePassword(snap.val());
+      });
     } else {
-      enabledKnown = true; authVersionKnown = true;
+      enabledKnown = true; authVersionKnown = true; passwordKnown = true;
       checkPasswordAndStart();
     }
 
