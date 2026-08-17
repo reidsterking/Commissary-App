@@ -404,14 +404,26 @@
       // re-removes anyone who slips through this window, so a slipped-through
       // join doesn't stick.
       const nameKey = sanitizeKey(myName);
-      const [rosterSnap, blockedNameSnap, blockedClientSnap, peopleSnap] = await Promise.all([
-        db.ref('roster/' + rosterKey(myName, myBaggerNumber)).once('value'),
+      const rKey = rosterKey(myName, myBaggerNumber);
+      const [rosterSnap, rosterRequestSnap, blockedNameSnap, blockedClientSnap, peopleSnap] = await Promise.all([
+        db.ref('roster/' + rKey).once('value'),
+        db.ref('rosterRequests/' + rKey).once('value'),
         db.ref('blockedNames/' + nameKey).once('value'),
         db.ref('blockedClients/' + clientId).once('value'),
         peopleRef().once('value')
       ]);
       if (!rosterSnap.exists()) {
-        alert("That name and bagger number aren't on the roster. Please see a staff member to be added.");
+        if (rosterRequestSnap.exists()) {
+          alert("Your request to join is still waiting on admin approval. Please check back soon.");
+          return;
+        }
+        showModal('Not on the roster yet', "You're not on the roster. Submit a request for an admin to approve you before you can join?", [
+          {label:'Cancel', onClick:()=>{}},
+          {label:'Submit request', className:'btn primary', onClick: async ()=> {
+            await db.ref('rosterRequests/' + rKey).set({ name: myName, baggerNumber: myBaggerNumber, requestedAt: firebase.database.ServerValue.TIMESTAMP });
+            alert('Request submitted. An admin needs to approve you before you can join — please check back soon.');
+          }}
+        ]);
         return;
       }
       if (blockedNameSnap.exists() || blockedClientSnap.exists()) {
