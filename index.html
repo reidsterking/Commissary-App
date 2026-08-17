@@ -12,7 +12,7 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-7" />
+  <meta name="app-version" content="2026-08-17-8" />
   <style>
     :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
     *{box-sizing:border-box}
@@ -22,7 +22,9 @@
     /* Top sticky bar */
     .topbar{position:sticky;top:0;background:var(--card);padding:12px 16px;border-bottom:1px solid #e6e9ee;display:flex;align-items:center;justify-content:space-between;z-index:10}
     .topbar .user{display:flex;align-items:center;gap:12px;width:100%}
-    .avatar{width:48px;height:48px;border-radius:8px;background:linear-gradient(135deg,#e6f0ff,#fff);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent)}
+    .avatar{width:48px;height:48px;border-radius:8px;background:linear-gradient(135deg,#e6f0ff,#fff);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent);font-size:1.1rem;cursor:pointer;position:relative}
+    .avatar::after{content:'✎';position:absolute;bottom:-4px;right:-4px;background:#fff;border:1px solid #e6e9ee;border-radius:50%;width:16px;height:16px;font-size:9px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+    .who .icon-prefix{margin-right:4px}
     .user-info{flex:1}
     .username{font-size:1.05rem;font-weight:600}
     .status{color:var(--muted);font-size:0.9rem}
@@ -86,7 +88,7 @@
   <!-- Top bar (current user summary) -->
   <div id="topbar" class="topbar" style="display:none" role="region" aria-label="Your status">
     <div class="user" id="topUser">
-      <div class="avatar" id="avatar">A</div>
+      <div class="avatar" id="avatar" title="Tap to change your icon">A</div>
       <div class="user-info">
         <div class="username" id="meName">Your name</div>
         <div class="status" id="meStatus">#3 in line</div>
@@ -273,6 +275,67 @@
 
     function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
 
+    // Accepts either up to 2 plain letters, or exactly one emoji (which can
+    // itself be several UTF-16 code units — flags, skin tones, etc. — so this
+    // counts actual visual characters via Intl.Segmenter rather than string
+    // length). Anything else (multiple emoji, random symbols, 3+ letters) is
+    // rejected so the icon field can't be turned into extra text.
+    function isSingleEmoji(s){
+      if (!s) return false;
+      if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+        try {
+          const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+          return Array.from(seg.segment(s)).length === 1;
+        } catch(e) { /* fall through to the rough fallback below */ }
+      }
+      return s.length >= 1 && s.length <= 8; // best effort on very old browsers
+    }
+
+    function showIconEditor(){
+      const me = people[clientId];
+      if (!me) return;
+      const current = me.icon || '';
+      modalRoot.innerHTML = `
+        <div class="modal-backdrop">
+          <div class="modal">
+            <h4>Choose your icon</h4>
+            <p class="muted" style="margin:0 0 10px">Enter an emoji, or up to 2 letters.</p>
+            <input id="iconInput" type="text" value="${escapeHtml(current)}" maxlength="8" style="padding:12px;border-radius:8px;border:1px solid #e6e9ee;font-size:1.3rem;text-align:center;width:100%;box-sizing:border-box" />
+            <div id="iconError" class="error"></div>
+            <div class="actions" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px">
+              <button id="iconClearBtn" class="btn secondary">Use initials</button>
+              <button id="iconCancelBtn" class="btn secondary">Cancel</button>
+              <button id="iconSaveBtn" class="btn primary">Save</button>
+            </div>
+          </div>
+        </div>`;
+      const input = document.getElementById('iconInput');
+      const err = document.getElementById('iconError');
+      input.focus(); input.select();
+      document.getElementById('iconCancelBtn').onclick = () => { modalRoot.innerHTML = ''; };
+      document.getElementById('iconClearBtn').onclick = async () => {
+        modalRoot.innerHTML = '';
+        if (people[clientId]) await myDbRef().update({ icon: null });
+      };
+      const save = async () => {
+        const val = input.value.trim();
+        if (!val) { err.textContent = 'Type an emoji or up to 2 letters.'; return; }
+        let toSave;
+        if (/^[A-Za-z]{1,2}$/.test(val)) {
+          toSave = val.toUpperCase();
+        } else if (isSingleEmoji(val)) {
+          toSave = val;
+        } else {
+          err.textContent = 'Please enter one emoji, or up to 2 letters.';
+          return;
+        }
+        modalRoot.innerHTML = '';
+        if (people[clientId]) await myDbRef().update({ icon: toSave });
+      };
+      document.getElementById('iconSaveBtn').onclick = save;
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+    }
+
     // Turn a typed name into a Firebase-key-safe, case-insensitive identifier.
     // Used to look people up in the blockedNames list. Must match the logic
     // used in admin.html exactly, or blocking won't line up.
@@ -386,7 +449,8 @@
         const r = document.createElement('div'); r.className='row';
         const adminTag = p.movedByAdmin ? ' <span class="admin-tag">(Moved by admin)</span>' : '';
         const posTag = timeLabel === 'Joined:' ? `<div class=\"meta\">#${idx+1}</div>` : '';
-        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${escapeHtml(p.name)}</div>${posTag}</div><div class=\"meta\">${timeLabel} ${timeAgo(p.ts)}${adminTag}</div></div><div class=\"right\"></div>`;
+        const iconPrefix = p.icon ? `<span class=\"icon-prefix\">${escapeHtml(p.icon)}</span>` : '';
+        r.innerHTML = `<div class=\"left\"><div style=\"display:flex;align-items:center;gap:8px\"><div class=\"who\">${iconPrefix}${escapeHtml(p.name)}</div>${posTag}</div><div class=\"meta\">${timeLabel} ${timeAgo(p.ts)}${adminTag}</div></div><div class=\"right\"></div>`;
         r.onclick = ()=> onRowClick(p.id);
         if (p.pendingRemovalAt) r.classList.add('pending');
         if (p.pendingRemovalAt) {
@@ -418,7 +482,7 @@
       // topbar current user
       const me = people[clientId];
       if (me) {
-        avatarEl.textContent = (me.name||'').slice(0,2).toUpperCase();
+        avatarEl.textContent = me.icon || (me.name||'').slice(0,2).toUpperCase();
         meNameEl.textContent = me.name || 'You';
         let statusText = '';
         if (me.status === 'register') statusText = 'At the register';
@@ -648,6 +712,7 @@
     // leave button in topbar
     leaveBtn.addEventListener('click', ()=> showModal('Leave queue','Are you sure you want to leave?',[
       {label:'Cancel', onClick:()=>{}}, {label:'Leave', className:'btn primary', onClick: () => leaveQueueConfirmed()}]));
+    avatarEl.addEventListener('click', showIconEditor);
 
     toRegisterBtn.addEventListener('click', async ()=> {
       // only change our own entry
