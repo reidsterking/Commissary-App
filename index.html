@@ -12,7 +12,7 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-5" />
+  <meta name="app-version" content="2026-08-17-6" />
   <style>
     :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
     *{box-sizing:border-box}
@@ -183,6 +183,7 @@
     const LS_CLIENT = 'comm_clientId';
     const LS_NAME = 'comm_name';
     const LS_AUTH = 'comm_auth';
+    const LS_AUTH_VERSION = 'comm_auth_version';
 
     // UI elements
     const closedScreen = document.getElementById('closedScreen');
@@ -215,6 +216,13 @@
     let meWatchRef = null; // live ref watching our own entry, re-pointed if we reclaim a different id
     let siteEnabled = true; // live-updated from DB; admin can flip this off to close the queue
     let appStarted = false;
+    // "Log everyone out" support: admin can bump siteStatus/authVersion, which
+    // invalidates every browser's saved password-auth flag, even ones that were
+    // already past the password screen — a plain password change alone can't
+    // do that, since a browser that already unlocked never re-checks it.
+    let authVersion = null;
+    let enabledKnown = false;
+    let authVersionKnown = false;
 
     // Initialize local client id if missing
     if (!clientId) {
@@ -560,18 +568,42 @@
     });
 
     // Password gate
+    // A browser only counts as authenticated if it has LS_AUTH=true AND its
+    // saved auth version matches the current one from the DB. Admin bumping
+    // siteStatus/authVersion changes the current value, so every previously-
+    // authenticated browser stops matching — effectively logging everyone out
+    // — without needing to touch each browser individually.
+    function isLocallyAuthed(){
+      if (localStorage.getItem(LS_AUTH) !== 'true') return false;
+      const stored = localStorage.getItem(LS_AUTH_VERSION) || '0';
+      const current = String(authVersion || 0);
+      return stored === current;
+    }
     function checkPasswordAndStart(){
       if (siteEnabled === false) { showClosedScreen(); return; }
-      if (localStorage.getItem(LS_AUTH) === 'true') {
+      if (isLocallyAuthed()) {
         initialCheck();
       } else {
         passwordScreen.style.display = 'block';
       }
     }
+    // Called when the admin bumps authVersion while this tab is already sitting
+    // past the password screen — sends it back to the password screen live,
+    // without touching the person's place in the queue itself.
+    function forceReauth(){
+      if (siteEnabled === false) return; // closed screen already takes priority
+      if (passwordScreen.style.display === 'block') return; // already there
+      nameScreen.style.display='none';
+      queueScreen.style.display='none';
+      topbar.style.display='none';
+      bottomBar.style.display='none';
+      passwordScreen.style.display='block';
+    }
     passwordBtn.addEventListener('click', () => {
       const val = passwordInput.value;
       if (val === ACCESS_PASSWORD) {
         localStorage.setItem(LS_AUTH, 'true');
+        localStorage.setItem(LS_AUTH_VERSION, String(authVersion || 0));
         passwordScreen.style.display = 'none';
         passwordError.textContent = '';
         passwordInput.value = '';
@@ -599,18 +631,40 @@
     // panel actually writes to this path for the first time.
     function handleSiteStatus(enabled){
       siteEnabled = enabled;
+      enabledKnown = true;
       if (!siteEnabled) {
         showClosedScreen();
         appStarted = true;
         return;
       }
       if (!appStarted) {
-        appStarted = true;
-        checkPasswordAndStart();
+        tryStart();
       } else if (closedScreen.style.display === 'block') {
         closedScreen.style.display = 'none';
         checkPasswordAndStart();
       }
+    }
+
+    // Live auth-version switch, controlled from the admin panel's
+    // "Log everyone out" button. Only forces a tab back to the password
+    // screen once we've actually seen the version change (not on first load),
+    // and only if this tab isn't already correctly authenticated for it.
+    function handleAuthVersion(newVersion){
+      const changed = authVersionKnown && newVersion !== authVersion;
+      authVersion = newVersion;
+      authVersionKnown = true;
+      if (!appStarted) { tryStart(); return; }
+      if (changed && !isLocallyAuthed()) forceReauth();
+    }
+
+    // The very first screen shown depends on both whether the queue is open
+    // and what the current auth version is — wait until both are known at
+    // least once before deciding, so a slow-to-arrive authVersion value can't
+    // let a stale-but-locally-"authed" browser slip past the password screen.
+    function tryStart(){
+      if (!enabledKnown || !authVersionKnown || appStarted) return;
+      appStarted = true;
+      checkPasswordAndStart();
     }
 
     // Periodic tasks
@@ -623,7 +677,11 @@
         const val = snap.val();
         handleSiteStatus(val === false ? false : true);
       });
+      db.ref('siteStatus/authVersion').on('value', snap => {
+        handleAuthVersion(snap.val());
+      });
     } else {
+      enabledKnown = true; authVersionKnown = true;
       checkPasswordAndStart();
     }
 
