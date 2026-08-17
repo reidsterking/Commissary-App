@@ -12,7 +12,7 @@
   <!-- Bump this string on every deploy. A tab left open (e.g. on a register)
        polls for this to change and auto-reloads, so it can never keep running
        old logic (missed bug fixes, missing features) indefinitely. -->
-  <meta name="app-version" content="2026-08-17-6" />
+  <meta name="app-version" content="2026-08-17-7" />
   <style>
     :root{--bg:#f7f8fa;--card:#ffffff;--muted:#6b7280;--accent:#0066cc;--danger:#d9534f}
     *{box-sizing:border-box}
@@ -224,6 +224,14 @@
     let enabledKnown = false;
     let authVersionKnown = false;
 
+    // Status-change alerts (spot #1/#2 in line, or moved by an admin). Tracks
+    // the last state we alerted on so we only fire on an actual transition,
+    // not on every snapshot — and a "baseline" flag so loading the page while
+    // already in spot #1 doesn't fire a spurious alert on first load.
+    let notifyBaselineSet = false;
+    let lastNotifyPos = null;
+    let lastNotifyMovedByAdmin = false;
+
     // Initialize local client id if missing
     if (!clientId) {
       if (window.crypto && crypto.randomUUID) clientId = crypto.randomUUID();
@@ -423,6 +431,39 @@
         meStatusEl.textContent = statusText;
       }
 
+      // Fire a status-change alert on an actual transition into spot #1/#2 in
+      // line, or the moment an admin moves this person. Only after the first
+      // baseline is captured, so loading the page already in spot #1 doesn't
+      // alert immediately.
+      if (me) {
+        let posBucket = null;
+        if (me.status === 'line') {
+          const pos = line.findIndex(p=>p.id===clientId) + 1; // 1-indexed
+          if (pos === 1 || pos === 2) posBucket = pos;
+        }
+        const movedByAdminNow = !!me.movedByAdmin;
+        if (!notifyBaselineSet) {
+          lastNotifyPos = posBucket;
+          lastNotifyMovedByAdmin = movedByAdminNow;
+          notifyBaselineSet = true;
+        } else {
+          if (posBucket && posBucket !== lastNotifyPos) {
+            notifyUser(
+              posBucket === 1 ? "You're next!" : "You're #2 in line!",
+              'Head toward the registers — you\'ll be called soon.'
+            );
+          }
+          if (movedByAdminNow && !lastNotifyMovedByAdmin) {
+            const where = me.status === 'register' ? 'at the register' : me.status === 'break' ? 'on break' : 'in line';
+            notifyUser('An admin moved you', `You're now ${where}.`);
+          }
+          lastNotifyPos = posBucket;
+          lastNotifyMovedByAdmin = movedByAdminNow;
+        }
+      } else {
+        notifyBaselineSet = false; // reset so rejoining later re-seeds cleanly
+      }
+
       renderGroup(registerList, regs, 'No one at registers', 'since');
       renderGroup(lineList, line, 'No one in line', 'Joined:');
       renderGroup(breakList, brk, 'No one on break', 'since');
@@ -433,6 +474,40 @@
     }
 
     function timeAgo(ts){ if(!ts) return ''; const d = new Date(ts); return d.toLocaleTimeString(); }
+
+    // Status-change alert: a short chime + in-page banner (works on every
+    // platform whenever this tab is open) plus a real OS notification when
+    // permission has been granted and the browser supports it. On desktop and
+    // Android that OS notification lands in the actual notification center
+    // even if this tab is backgrounded. On iPhone Safari, a plain website tab
+    // can't do that at all (Apple only allows it for a home-screen-installed
+    // app with real push infrastructure, which this static site doesn't
+    // have) — the chime/banner is the fallback for that case, but only while
+    // the tab itself is open and visible.
+    function playChime(){
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(); const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = 'sine'; o.frequency.value = 880; g.gain.value = 0.18;
+        o.start();
+        o.stop(ctx.currentTime + 0.28);
+      } catch(e) { /* audio blocked until a user gesture on this page; harmless */ }
+    }
+    function showToast(message){
+      const t = document.createElement('div');
+      t.textContent = message;
+      t.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);max-width:88%;text-align:center;background:#111;color:#fff;padding:10px 18px;border-radius:999px;font-weight:600;font-size:0.9rem;z-index:100;box-shadow:0 4px 16px rgba(0,0,0,0.25)';
+      document.body.appendChild(t);
+      setTimeout(()=>{ t.remove(); }, 4500);
+    }
+    function notifyUser(title, body){
+      playChime();
+      showToast(title);
+      if (window.Notification && Notification.permission === 'granted') {
+        try { new Notification(title, { body, tag: 'queue-status' }); } catch(e) {}
+      }
+    }
 
     // clicking a row: if it's me -> cancel my own timer or leave; else -> set pendingRemovalAt or cancel
     // (deliberately: this is the ONLY way another person's row can be acted on from
@@ -542,12 +617,33 @@
     // RE-CREATE a deleted node if it doesn't check first — guard against that so a
     // removed/blocked person's tab can't resurrect their entry just by tapping one
     // of these buttons. Also clears movedByAdmin, since this move is self-initiated.
-    async function moveMeToRegister(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false }); }
-    async function moveMeToEnd(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false }); }
-    async function moveMeToBreak(){ if(!db || !people[clientId]) return; await myDbRef().update({ status:'break', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false }); }
+    async function moveMeToRegister(){
+      if(!db || !people[clientId]) return;
+      await myDbRef().update({ status:'register', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false });
+      logActivity('self_move_register', myName);
+    }
+    async function moveMeToEnd(){
+      if(!db || !people[clientId]) return;
+      await myDbRef().update({ status:'line', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false });
+      logActivity('self_move_line', myName);
+    }
+    async function moveMeToBreak(){
+      if(!db || !people[clientId]) return;
+      await myDbRef().update({ status:'break', ts: firebase.database.ServerValue.TIMESTAMP, movedByAdmin: false });
+      logActivity('self_move_break', myName);
+    }
 
     // join by pressing button
-    joinBtn.addEventListener('click', joinLine);
+    joinBtn.addEventListener('click', () => {
+      // Ask for notification permission synchronously inside this click
+      // handler (the click is the user gesture some browsers require for the
+      // permission prompt to be allowed at all) — asking later, inside an
+      // async function, is too late on some platforms.
+      if (window.Notification && Notification.permission === 'default') {
+        try { Notification.requestPermission(); } catch(e) {}
+      }
+      joinLine();
+    });
     nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn.click(); });
     // leave button in topbar
     leaveBtn.addEventListener('click', ()=> showModal('Leave queue','Are you sure you want to leave?',[
