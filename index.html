@@ -39,17 +39,18 @@
     .btn.primary{background:var(--accent);color:white}
     .btn.secondary{background:#f1f5f9;color:#111}
 
-    /* Name screen */
+    /* Name / password screen */
     .name-screen{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:20px}
-    input[type=text]{padding:14px;border-radius:10px;border:1px solid #e6e9ee;font-size:1rem}
+    input[type=text],input[type=password]{padding:14px;border-radius:10px;border:1px solid #e6e9ee;font-size:1rem}
     .center{display:flex;justify-content:center}
+    .error{color:var(--danger);font-size:0.9rem;min-height:1.2em}
 
     /* Modal */
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:50}
     .modal{background:white;padding:16px;border-radius:10px;max-width:400px;width:92%;box-shadow:0 6px 30px rgba(0,0,0,0.2)}
     .modal h4{margin:0 0 8px}
     .modal p{color:var(--muted);margin:0 0 12px}
-    .modal .actions{display:flex;gap:8px;justify-content:flex-end}
+    .modal .actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 
     /* small helpers */
     .muted{color:var(--muted)}
@@ -88,6 +89,16 @@
 
   <!-- Main content area -->
   <main class="content">
+    <!-- Password gate -->
+    <div id="passwordScreen" class="name-screen" style="display:none">
+      <h2>Enter the queue password</h2>
+      <input id="passwordInput" type="password" inputmode="text" placeholder="Password" autocomplete="off" />
+      <div id="passwordError" class="error"></div>
+      <div class="center">
+        <button id="passwordBtn" class="btn primary">Continue</button>
+      </div>
+    </div>
+
     <!-- Name screen -->
     <div id="nameScreen" class="name-screen" style="display:none">
       <h2>Enter your name</h2>
@@ -126,11 +137,21 @@
     const COUNTDOWN_UPDATE = 1000; // update countdown every second
     const PENDING_DELAY = 10 * 60 * 1000; // 10 minutes in ms
 
+    // Change this to whatever password you want baggers to use to join the queue.
+    // It's checked in the browser only (this is a static site with no server),
+    // so it keeps casual customers out but is not real security.
+    const ACCESS_PASSWORD = "Baggers1!";
+
     // Local storage keys
     const LS_CLIENT = 'comm_clientId';
     const LS_NAME = 'comm_name';
+    const LS_AUTH = 'comm_auth';
 
     // UI elements
+    const passwordScreen = document.getElementById('passwordScreen');
+    const passwordInput = document.getElementById('passwordInput');
+    const passwordBtn = document.getElementById('passwordBtn');
+    const passwordError = document.getElementById('passwordError');
     const nameScreen = document.getElementById('nameScreen');
     const queueScreen = document.getElementById('queueScreen');
     const topbar = document.getElementById('topbar');
@@ -150,8 +171,8 @@
     // State
     let clientId = localStorage.getItem(LS_CLIENT) || null;
     let myName = localStorage.getItem(LS_NAME) || '';
-    let meRef = null;
     let people = {}; // {id: {name,status,ts,pendingRemovalAt}}
+    let meWatchRef = null; // live ref watching our own entry, re-pointed if we reclaim a different id
 
     // Initialize local client id if missing
     if (!clientId) {
@@ -192,13 +213,46 @@
     function peopleRef(){ return db.ref('people'); }
     function myDbRef(){ return db.ref('people/' + clientId); }
 
+    // (Re)attach the listener that watches our own entry, e.g. to detect someone
+    // else removing us, or auto-removal once a pending timer expires. Needs to be
+    // re-pointed whenever clientId changes (e.g. after reclaiming an entry by name).
+    function watchMe(){
+      if (meWatchRef) { try { meWatchRef.off(); } catch(e){} }
+      meWatchRef = myDbRef();
+      meWatchRef.on('value', snap => {
+        if (!snap.exists()) { if (queueScreen.style.display==='block') { alert('You were removed from the queue'); gotoNameScreen(); } }
+      });
+    }
+
     async function joinLine() {
       if (!db) { alert('Realtime DB not configured yet. Paste firebaseConfig in the page.'); return; }
       myName = nameInput.value.trim();
       if (!myName) { alert('Type your name'); return; }
       localStorage.setItem(LS_NAME, myName);
-      const data = { name: myName, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null };
-      await myDbRef().set(data);
+
+      // If someone with this name already has an entry (e.g. they lost their local
+      // identity by opening the site in a new browser/tab), reclaim that entry
+      // instead of creating a duplicate that would need a 10 minute timer to clear.
+      const snap = await peopleRef().once('value');
+      const all = snap.val() || {};
+      let existingId = null;
+      Object.keys(all).forEach(id => {
+        const v = all[id];
+        if (v && v.name && v.name.trim().toLowerCase() === myName.toLowerCase()) existingId = id;
+      });
+
+      if (existingId) {
+        clientId = existingId;
+        localStorage.setItem(LS_CLIENT, clientId);
+        if (all[existingId].pendingRemovalAt) {
+          await peopleRef().child(existingId + '/pendingRemovalAt').remove();
+        }
+      } else {
+        const data = { name: myName, status: 'line', ts: firebase.database.ServerValue.TIMESTAMP, pendingRemovalAt: null };
+        await myDbRef().set(data);
+      }
+
+      watchMe();
       setupListeners();
       showQueueScreen();
     }
@@ -246,6 +300,7 @@
           const pos = line.findIndex(p=>p.id===clientId);
           statusText = pos>=0 ? `#${pos+1} in line` : 'In line';
         }
+        if (me.pendingRemovalAt) statusText += ' · tap your name below to cancel removal';
         meStatusEl.textContent = statusText;
       }
 
@@ -288,14 +343,24 @@
 
     function timeAgo(ts){ if(!ts) return ''; const d = new Date(ts); return d.toLocaleTimeString(); }
 
-    // clicking a row: if it's me -> confirm immediate remove; else -> set pendingRemovalAt or cancel
+    // clicking a row: if it's me -> cancel my own timer or leave; else -> set pendingRemovalAt or cancel
     function onRowClick(id) {
       const p = people[id]; if(!p) return;
       if (id === clientId) {
-        showModal('Leave queue', 'Remove yourself from the queue?', [
-          {label:'Cancel', onClick:()=>{}},
-          {label:'Leave', className:'btn primary', onClick:()=> leaveQueueConfirmed()}
-        ]);
+        if (p.pendingRemovalAt) {
+          showModal('Removal timer running', `You have a removal timer running. You can cancel it to stay in the queue, or leave now.`, [
+            {label:'Keep waiting', onClick:()=>{}},
+            {label:'Cancel timer', className:'btn primary', onClick: async ()=> {
+              await myDbRef().child('pendingRemovalAt').remove();
+            }},
+            {label:'Leave queue', className:'btn secondary', onClick:()=> leaveQueueConfirmed()}
+          ]);
+        } else {
+          showModal('Leave queue', 'Remove yourself from the queue?', [
+            {label:'Cancel', onClick:()=>{}},
+            {label:'Leave', className:'btn primary', onClick:()=> leaveQueueConfirmed()}
+          ]);
+        }
         return;
       }
 
@@ -378,6 +443,7 @@
 
     // join by pressing button
     joinBtn.addEventListener('click', joinLine);
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn.click(); });
     // leave button in topbar
     leaveBtn.addEventListener('click', ()=> showModal('Leave queue','Are you sure you want to leave?',[
       {label:'Cancel', onClick:()=>{}}, {label:'Leave', className:'btn primary', onClick: () => leaveQueueConfirmed()}]));
@@ -392,6 +458,28 @@
       await moveMeToEnd();
     });
 
+    // Password gate
+    function checkPasswordAndStart(){
+      if (localStorage.getItem(LS_AUTH) === 'true') {
+        initialCheck();
+      } else {
+        passwordScreen.style.display = 'block';
+      }
+    }
+    passwordBtn.addEventListener('click', () => {
+      const val = passwordInput.value;
+      if (val === ACCESS_PASSWORD) {
+        localStorage.setItem(LS_AUTH, 'true');
+        passwordScreen.style.display = 'none';
+        passwordError.textContent = '';
+        passwordInput.value = '';
+        initialCheck();
+      } else {
+        passwordError.textContent = 'Incorrect password. Try again.';
+      }
+    });
+    passwordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') passwordBtn.click(); });
+
     // Initial flow: if we have an existing DB entry for our clientId, go to queue, else show name screen
     async function initialCheck(){
       if (!db) { // firebase not initialized
@@ -400,7 +488,7 @@
         return;
       }
       const snap = await myDbRef().once('value');
-      if (snap.exists()) { setupListeners(); showQueueScreen(); }
+      if (snap.exists()) { watchMe(); setupListeners(); showQueueScreen(); }
       else { nameScreen.style.display='block'; }
     }
 
@@ -408,15 +496,8 @@
     setInterval(()=>{ try{ cleanupExpired(); }catch(e){} }, CLEANUP_INTERVAL);
     setInterval(updateCountdowns, COUNTDOWN_UPDATE);
 
-    // Watch DB changes to detect if someone else removed me directly
-    if (db) {
-      myDbRef().on('value', snap => {
-        if (!snap.exists()) { if (queueScreen.style.display==='block') { alert('You were removed from the queue'); gotoNameScreen(); } }
-      });
-    }
-
     // start
-    initialCheck();
+    checkPasswordAndStart();
 
   </script>
 </body>
